@@ -9,6 +9,7 @@ reports
 .DS_Store
 **/tests/output/*
 .svn
+.github
 _git*
 *.orig
 .coverage
