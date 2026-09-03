@@ -281,7 +281,7 @@ def plot_single_result(
     lowerDetectionMjd = min(mjdList)
     upperDetectionMjd = max(mjdList)
 
-    # DETERMIN MAGNITUDE RANGE
+    # DETERMINE MAGNITUDE RANGE
     allMags = magnitudes['o']['mags'] + magnitudes['c']['mags']
     magRange = max(allMags) - min(allMags)
     deltaMag = magRange * 0.1

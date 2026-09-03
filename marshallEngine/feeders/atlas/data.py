@@ -6,17 +6,17 @@
 :Author:
     David Young
 """
+from datetime import datetime, date, time, timedelta
+from marshallEngine.feeders.atlas.lightcurve import generate_atlas_lightcurves
+from fundamentals.mysql import writequery
+from astrocalc.times import conversions
+from astrocalc.times import now
+from ..data import data as basedata
+from fundamentals import tools
 from builtins import str
 import sys
 import os
 os.environ['TERM'] = 'vt100'
-from fundamentals import tools
-from ..data import data as basedata
-from astrocalc.times import now
-from astrocalc.times import conversions
-from fundamentals.mysql import writequery
-from marshallEngine.feeders.atlas.lightcurve import generate_atlas_lightcurves
-from datetime import datetime, date, time, timedelta
 
 
 class data(basedata):
@@ -76,7 +76,6 @@ class data(basedata):
 
         """
         self.log.debug('starting the ``ingest`` method')
-
 
         timelimit = datetime.now() - timedelta(days=int(withinLastDays))
         timelimit = timelimit.strftime("%Y-%m-%d")
