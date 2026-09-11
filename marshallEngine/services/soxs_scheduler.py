@@ -11,6 +11,9 @@
 """
 import json
 import requests
+import select
+import time
+from datetime import datetime, timedelta
 from fundamentals.mysql import readquery, writequery
 from fundamentals import tools
 from builtins import object
@@ -83,13 +86,13 @@ class soxs_scheduler(object):
 
         # GENERATE THE LIST OF TRANSIENTS NEEDING AN OB
         sqlQuery = f"""
-            SELECT 
-            t.transientBucketId, s.targetName, t.raDeg, t.decDeg, s.latestMag, s.latestMagFilter
-            FROM
-            scheduler_obs s,
-            transientbucketsummaries t
-            WHERE
-            t.transientBucketId = s.transientBucketId AND s.OB_ID is null and s.latestMag < 19.0 AND autoOB <> -1
+        SELECT *
+        FROM scheduler_obs so, transientbucketsummaries t , pesstoobjects p 
+        WHERE DATE(t.dateAdded) > DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND 
+        so.transientBucketId  = t.transientBucketId AND 
+        p.transientBucketId = t.transientBucketId   AND
+        p.classifiedFlag = 0 AND
+        so.latestMag <= 19  AND autoOB <> -1 AND so.OB_ID is null
         """
 
         rows = readquery(
@@ -101,6 +104,16 @@ class soxs_scheduler(object):
 
         for r in rows:
             # GET FIRST CHARACTER OF FILTER
+            if False:
+                print(f"Processing transient {r['transientBucketId']} with OB_ID {r['OB_ID']}")
+                print("Waiting 1s (press Enter to stop the loop)...")
+                if sys.stdin in select.select([sys.stdin], [], [], 1.0)[0]:
+                    sys.stdin.readline()
+                    print("Stopping loop.")
+                    break
+                print("================================================")
+                #print(r)
+            print("================================================")
             ffilter = r['latestMagFilter']
             if not ffilter:
                 ffilter = ""
@@ -108,6 +121,10 @@ class soxs_scheduler(object):
                 ffilter = ffilter[0]
             try:
                 transientBucketId = r['transientBucketId']
+                date_added = datetime.strptime(str(r['dateAdded'])[:19], "%Y-%m-%d %H:%M:%S")
+                if date_added < datetime.now() - timedelta(days=30):
+                    print(f"Transient {transientBucketId} is older than 30 days, skipping. Observed at {date_added}")
+                    continue
                 obid = self._create_single_auto_ob(
                     transientBucketId=transientBucketId,
                     target_name=r['targetName'],
@@ -125,7 +142,15 @@ class soxs_scheduler(object):
                 print(e)
                 failedIds.append(transientBucketId)
                 pass
-
+        # USE WRITEQUERY TO CALL STORED PROCEDURE TO UPDATE THE PENDING OBSERVATION LIST
+        sqlQuery = f"""
+            call refresh_meta_workflow_lists_counts();
+        """
+        writequery(
+            log=self.log,
+            sqlQuery=sqlQuery,
+            dbConn=self.dbConn
+        )
         print(f"{len(passList)} OBs added to the scheduler, {len(failedIds)} failed to be added.")
 
         self.log.debug(
@@ -206,8 +231,9 @@ class soxs_scheduler(object):
                     "transientBucketID": transientBucketId,
                     "right_ascension": float(raDeg)
                 })
-            #print(x)
-            #print(f"{self.baseurl}/createAutoOB")
+            print(x)
+            print(f"{self.baseurl}/createAutoOB")
+            
             response = requests.post(
                 url=f"{self.baseurl}/createAutoOB",
                 headers={
@@ -234,9 +260,12 @@ class soxs_scheduler(object):
             print(e)
             self.log.error(
                 'HTTP Request failed to scheduler `createAutoOB` resource failed')
+            print(response.text)
+
         if http_status_code != 201 or schd_status_code != 1:
             error = content["payload"]
             print(f"createAutoOB failed with error: '{error}'")
+            # sys.exit(0)
             return -1
 
         obid = content["payload"][0]['OB_ID']
@@ -252,7 +281,18 @@ class soxs_scheduler(object):
             dbConn=self.dbConn
         )
 
+        # MOVE IT TO THE PENDING OBSERVATION LIST
+        sqlQuery = f"""
+            update pesstoobjects set marshallWorkflowLocation = 'pending observation' where transientBucketId = {transientBucketId};
+        """
+        rows = writequery(
+            log=self.log,
+            sqlQuery=sqlQuery,
+            dbConn=self.dbConn
+        )
+
         self.log.debug('completed the ``_create_single_auto_ob`` method')
+        # sys.exit(0)
         return obid
 
     def collect_schedule_obs_statuses(
@@ -285,12 +325,13 @@ class soxs_scheduler(object):
         self.log.debug('starting the ``collect_schedule_obs_statuses`` method')
 
         try:
-            response = requests.get(
+            response = requests.post(
                 url=f"{self.baseurl}/obMarshallShort",
             )
             data = response.json()
 
         except requests.exceptions.RequestException:
+            print(traceback.format_exc())
             self.log.debug('HTTP Request failed on obMarshallShort')
 
         try:
@@ -342,11 +383,11 @@ class soxs_scheduler(object):
                 sqlQuery=sqlQuery,
                 dbConn=self.dbConn
             )
+            print('OB ' + str(r['OB_ID']) + 'Deleted')
     
 
-    #This method should be used ONLY in commisionig (La Silla 11 sept 2024)
     def removeOlderOBs(self):
-        sqlQuery = "SELECT * FROM  scheduler_obs  WHERE `dateCreated` < date('2025-09-04') AND OB_ID is not NULL AND autoOB = 1;"
+        sqlQuery = "SELECT * FROM scheduler_obs WHERE dateCreated < DATE_SUB(CURDATE(), INTERVAL 1 MONTH) AND OB_ID IS NOT NULL AND autoOB = 1;"
         rows = readquery(
             log=self.log,
             sqlQuery=sqlQuery,
@@ -377,8 +418,50 @@ class soxs_scheduler(object):
                 dbConn=self.dbConn
             )
 
+            #Put the source back to inbox
+            sqlQueryUpdate = "UPDATE pesstoobjects SET pesstoobjects.marshallWorkflowLocation = 'Inbox' WHERE transientBucketId = " + str(r['transientBucketId']) + " AND marshallWorkflowLocation = 'Inbox' ;"
+            writequery(
+                log=self.log,
+                sqlQuery=sqlQueryUpdate,
+                dbConn=self.dbConn
+            )
+
             print('OB ' + str(r['OB_ID']) + 'Deletet with response: ' + str(response))
 
-
+    def removeFainterOBs(self):
+        sqlQuery = "SELECT * FROM scheduler_obs WHERE latestMag > 19 AND autoOB = 1 AND (ESO_OB_Status is Null OR ESO_OB_Status <> 'X')"
+        rows = readquery(
+            log=self.log,
+            sqlQuery=sqlQuery,
+            dbConn=self.dbConn
+        )
+        for r in rows:
+            print(r)
+            response = requests.delete(
+                url=f"{self.baseurl}/deleteOB",
+                headers={
+                    "Content-Type": "application/json; charset=utf-8",
+                },
+                data=json.dumps({
+                    "OB_ID": r['OB_ID']
+                })
+            )
+            sqlQueryUpdate = "UPDATE scheduler_obs SET scheduler_obs.autoOB = -1, scheduler_obs.ESO_OB_Status = 'Deleted' WHERE transientBucketId = " + str(r['transientBucketId']) + ";"
+            writequery(
+                log=self.log,
+                sqlQuery=sqlQueryUpdate,
+                dbConn=self.dbConn
+            )
+            print('OB ' + str(r['OB_ID']) + 'Deleted')
+            #Put the source back to inbox
+            sqlQueryUpdate = "UPDATE pesstoobjects SET pesstoobjects.marshallWorkflowLocation = 'Inbox' WHERE transientBucketId = " + str(r['transientBucketId']) 
+            writequery(
+                log=self.log,
+                sqlQuery=sqlQueryUpdate,
+                dbConn=self.dbConn
+            )
+            print('Source ' + str(r['transientBucketId']) + 'Put back to inbox')    
+    
+    
     # use the tab-trigger below for new method
     # xt-class-method

@@ -251,9 +251,13 @@ def main(arguments=None):
         )
         schr.request_all_required_auto_obs()
         # Updating status for each OB
-        #schr.collect_schedule_obs_statuses()
+        print("================================================")
+        print("Updating status for each OB")
+        print("================================================")
+        schr.collect_schedule_obs_statuses()   
         schr.remove_classified_obs()
-        #schr.removeOlderOBs()
+        schr.removeOlderOBs()
+        schr.removeFainterOBs()
 
     if "dbConn" in locals() and dbConn:
         dbConn.commit()
