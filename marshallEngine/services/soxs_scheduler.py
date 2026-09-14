@@ -93,7 +93,7 @@ class soxs_scheduler(object):
         so.transientBucketId  = t.transientBucketId AND 
         p.transientBucketId = t.transientBucketId   AND
         p.classifiedFlag = 0 AND
-        so.latestMag <= 19  AND autoOB <> -1 AND so.OB_ID is null
+        so.latestMag <= 20.00  AND autoOB <> -1 AND so.OB_ID is null
         """
 
         rows = readquery(
@@ -430,7 +430,7 @@ class soxs_scheduler(object):
             print('OB ' + str(r['OB_ID']) + 'Deletet with response: ' + str(response))
 
     def removeFainterOBs(self):
-        sqlQuery = "SELECT * FROM scheduler_obs WHERE latestMag > 19 AND autoOB = 1 AND (ESO_OB_Status is Null OR ESO_OB_Status <> 'X')"
+        sqlQuery = "SELECT * FROM scheduler_obs WHERE latestMag > 20 AND autoOB = 1 AND (ESO_OB_Status is Null OR ESO_OB_Status <> 'X')"
         rows = readquery(
             log=self.log,
             sqlQuery=sqlQuery,
