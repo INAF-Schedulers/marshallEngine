@@ -27,8 +27,6 @@ Documentation for marshallEngine is hosted by [Read the Docs](https://marshallEn
 
 ## Features
 
-* 
-
 
 ## How to cite marshallEngine
 
