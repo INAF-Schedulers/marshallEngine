@@ -10,6 +10,7 @@
     November 17, 2021
 """
 
+
 import json
 import requests
 import select
@@ -87,13 +88,35 @@ class soxs_scheduler(object):
 
         # GENERATE THE LIST OF TRANSIENTS NEEDING AN OB
         sqlQuery = f"""
-        SELECT *
-        FROM scheduler_obs so, transientbucketsummaries t , pesstoobjects p 
-        WHERE DATE(t.dateAdded) > DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND 
-        so.transientBucketId  = t.transientBucketId AND 
-        p.transientBucketId = t.transientBucketId   AND
-        p.classifiedFlag = 0 AND
-        so.latestMag <= 20.00  AND autoOB <> -1 AND so.OB_ID is null
+                SELECT so.*, t.earliestDetection , t.raDeg , t.decDeg 
+        FROM scheduler_obs so
+        JOIN transientbucketsummaries t
+            ON so.transientBucketId = t.transientBucketId
+        JOIN pesstoobjects p
+            ON p.transientBucketId = t.transientBucketId
+        WHERE  t.earliestDetection >= DATE_SUB(NOW(), INTERVAL 1 MONTH)
+        AND p.classifiedFlag = 0
+        AND so.latestMag <= 20.00
+        AND so.autoOB <> -1
+        AND so.OB_ID IS null
+        and (so.ESO_OB_Status <> 'X' OR so.ESO_OB_Status IS NULL)
+        AND p.snoozed = 0
+        
+        union 
+
+        SELECT so.* , t.earliestDetection , t.raDeg , t.decDeg 
+        FROM scheduler_obs so
+        JOIN transientbucketsummaries t
+            ON so.transientBucketId = t.transientBucketId
+        JOIN pesstoobjects p
+            ON p.transientBucketId = t.transientBucketId
+        WHERE so.latestMag <= 20.00
+        AND so.autoOB <> 1
+        AND (so.ESO_OB_Status <> 'X' OR so.ESO_OB_Status IS NULL)
+        AND p.classifiedFlag = 0
+        AND t.earliestDetection >= DATE_SUB(NOW(), INTERVAL 1 MONTH)
+        and so.ESO_OB_Status <> 'X'
+        AND p.snoozed = 0
         """
 
         rows = readquery(
@@ -122,7 +145,7 @@ class soxs_scheduler(object):
                 ffilter = ffilter[0]
             try:
                 transientBucketId = r['transientBucketId']
-                date_added = datetime.strptime(str(r['dateAdded'])[:19], "%Y-%m-%d %H:%M:%S")
+                date_added = datetime.strptime(str(r['earliestDetection'])[:19], "%Y-%m-%d %H:%M:%S")
                 if date_added < datetime.now() - timedelta(days=30):
                     print(f"Transient {transientBucketId} is older than 30 days, skipping. Observed at {date_added}")
                     continue
@@ -273,7 +296,7 @@ class soxs_scheduler(object):
 
         # UPDATE THE SCHEDULER TABLE
         sqlQuery = f"""
-            update scheduler_obs set ob_id = {obid} where transientBucketId = {transientBucketId};
+            update scheduler_obs set ob_id = {obid}, autoOB = 1 where transientBucketId = {transientBucketId};
         """
         print(sqlQuery)
         rows = writequery(
@@ -357,7 +380,7 @@ class soxs_scheduler(object):
         return None
 
     def remove_classified_obs(self):
-        sqlQuery = 'SELECT t.transientBucketId , so.OB_ID FROM  pesstoobjects AS t , scheduler_obs AS so  WHERE t.classifiedFlag = 1 AND so.transientBucketId = t.transientBucketId AND so.autoOB = 1 and so.OB_ID is not null'
+        sqlQuery = 'SELECT t.transientBucketId , so.OB_ID FROM  pesstoobjects AS t , scheduler_obs AS so  WHERE t.classifiedFlag = 1 AND so.transientBucketId = t.transientBucketId AND so.autoOB = 1 and so.OB_ID is not null AND so.ESO_OB_Status <> "X";'
         rows = readquery(
             log=self.log,
             sqlQuery=sqlQuery,
@@ -388,7 +411,7 @@ class soxs_scheduler(object):
     
 
     def removeOlderOBs(self):
-        sqlQuery = "SELECT * FROM scheduler_obs WHERE dateCreated < DATE_SUB(CURDATE(), INTERVAL 1 MONTH) AND OB_ID IS NOT NULL AND autoOB = 1;"
+        sqlQuery = "SELECT obs.*, t.earliestDetection  FROM scheduler_obs obs, transientbucketsummaries t  WHERE (t.earliestDetection < DATE_SUB(CURDATE(), INTERVAL 1 MONTH) or obs.dateCreated < DATE_SUB(CURDATE(), INTERVAL 1 MONTH)  ) AND OB_ID IS NOT NULL AND autoOB = 1 and obs.transientBucketId  = t.transientBucketId and obs.ESO_OB_Status <> 'X';"
         rows = readquery(
             log=self.log,
             sqlQuery=sqlQuery,
@@ -420,7 +443,7 @@ class soxs_scheduler(object):
             )
 
             #Put the source back to inbox
-            sqlQueryUpdate = "UPDATE pesstoobjects SET pesstoobjects.marshallWorkflowLocation = 'Inbox' WHERE transientBucketId = " + str(r['transientBucketId']) + " AND marshallWorkflowLocation = 'Inbox' ;"
+            sqlQueryUpdate = "UPDATE pesstoobjects SET pesstoobjects.marshallWorkflowLocation = 'Inbox' WHERE transientBucketId = " + str(r['transientBucketId']) 
             writequery(
                 log=self.log,
                 sqlQuery=sqlQueryUpdate,
@@ -454,7 +477,7 @@ class soxs_scheduler(object):
                 dbConn=self.dbConn
             )
             print('OB ' + str(r['OB_ID']) + 'Deleted')
-            #Put the source back to inbox
+            #Put the source back to inbox - TBD add a check on the current workflow location.
             sqlQueryUpdate = "UPDATE pesstoobjects SET pesstoobjects.marshallWorkflowLocation = 'Inbox' WHERE transientBucketId = " + str(r['transientBucketId']) 
             writequery(
                 log=self.log,
