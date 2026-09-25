@@ -24,6 +24,8 @@ import os
 from fundamentals.mysql import insert_list_of_dictionaries_into_database_tables
 import traceback
 
+#from sympy import content
+
 os.environ['TERM'] = 'vt100'
 
 
@@ -181,6 +183,64 @@ class soxs_scheduler(object):
             'completed the ``request_all_required_auto_obs`` method')
         return (passList, failedIds)
 
+    def request_autoOb_updates(
+            self):
+        """*request OB updates for all transients from scheduler*
+
+        **Return:**
+            - ``passList, failedIds`` -- 2 lists, one of transientBucketId that have been updated and the other of those that have failed to be updated
+
+        **Usage:**
+
+        ```python
+        schr.request_autoOb_updates()
+        ```
+        """
+        self.log.debug('starting the ``request_autoOb_updates`` method')
+
+        # GENERATE THE LIST OF TRANSIENTS NEEDING AN OB UPDATE
+        sqlQuery = f"""
+                SELECT *
+                FROM scheduler_obs so
+                WHERE so.autoOB = 1
+                AND so.ESO_OB_Status <> 'X'
+                AND so.latestMag <= 20.00
+                AND ABS(so.latestMag - so.insertedMag) >= 0.1;
+        """
+
+        rows = readquery(
+            log=self.log,
+            sqlQuery=sqlQuery,
+            dbConn=self.dbConn)
+        passList = []
+        failedIds = []
+
+        for r in rows:
+            try:
+                obid = r['OB_ID']
+                magnitude_list = [[r['latestMagFilter'][0], float(r['latestMag'])]]
+                obid = self._update_single_auto_ob(
+                    obid=obid,
+                    magnitude_list=magnitude_list
+                )
+                if -1 == obid or obid is None or obid <=0:
+                    failedIds.append(obid)
+                else:
+                    passList.append(obid)
+                    print(f"OB {obid} updated in the scheduler with magnitude {magnitude_list}")
+            except Exception as e:
+                print(e)
+                failedIds.append(obid)
+                pass
+
+        print(f"{len(passList)} OBs updated in the scheduler, {len(failedIds)} failed to be updated.")
+
+        self.log.debug(
+            'completed the ``request_autoOb_updates`` method')
+        return (passList, failedIds
+    )
+
+
     def update_scheduler_ob_table(
             self):
         """*sync the scheduler ob tables with the core marshall tables to bring it up-to-date*
@@ -204,6 +264,75 @@ class soxs_scheduler(object):
 
         self.log.debug('completed the ``update_scheduler_ob_table`` method')
         return
+
+
+    def _update_single_auto_ob(
+        self,
+        obid,
+        magnitude_list
+    ):
+
+        """*request to update a single auto ob from the soxs scheduler*
+
+        **Key Arguments:**
+            - ``obid`` -- the ID of the OB to update.
+            - ``magnitude_list`` -- the list of lists of magnitudes. [['g':19.06],['r':19.39]]
+
+        **Return:**
+            - ``True`` if the update is successful, ``False`` otherwise.
+        """
+        self.log.debug('starting the ``_update_single_auto_ob`` method')
+        try:
+
+            x = json.dumps({
+                                "OB_ID": obid,
+                                "magnitude_list": magnitude_list,
+                            })
+            # SENDING THE UPDATE REQUEST TO THE SCHEDULER
+
+
+            response = requests.put(
+                    url=f"{self.baseurl}/updateAutoOBMagnitude",
+                    headers={
+                        "Content-Type": "application/json; charset=utf-8",
+                    },
+                    data=x
+                )
+            response = response.json()
+            schd_status_code = response["status"]
+            content = response["data"]
+            http_status_code = content["status_code"]
+
+        except Exception as e:
+            self.log.error(
+                'HTTP Request failed to scheduler `updateAutoOBMagnitude` resource failed')
+            return -1
+        try:
+            if http_status_code != 200 or schd_status_code != 1:
+                    error = content["payload"]
+                    print(f"updateAutoOB failed with error: '{error}'")
+                    # sys.exit(0)
+                    return -1
+            # LANDING HERE MEANS THAT THE OB HAS BEEN SUCCESSFULLY UPDATED IN THE SCHEDULER
+            self.log.debug('OB successfully updated in the scheduler')
+            sqlQuery = f"""
+                        update scheduler_obs set insertedMag = latestMag, insertedFilter = latestMagFilter  where OB_ID = {obid};
+                    """
+            rows = writequery(
+                        log=self.log,
+                        sqlQuery=sqlQuery,
+                        dbConn=self.dbConn
+                    )
+        
+            self.log.debug('completed the ``_update_single_auto_ob`` method')
+            print(f"OB {obid} updated in the scheduler with magnitude {magnitude_list}")
+            return 1
+        except Exception as e:
+            self.log.error(
+                'Failed to update the scheduler_obs table after updating the OB in the scheduler')
+            return -1
+
+    
 
     def _create_single_auto_ob(
             self,
@@ -293,10 +422,12 @@ class soxs_scheduler(object):
             return -1
 
         obid = content["payload"][0]['OB_ID']
+        insertFilter = magnitude_list[0][0]
+        insertMag = float(magnitude_list[0][1])
 
         # UPDATE THE SCHEDULER TABLE
         sqlQuery = f"""
-            update scheduler_obs set ob_id = {obid}, autoOB = 1 where transientBucketId = {transientBucketId};
+            update scheduler_obs set ob_id = {obid}, autoOB = 1, insertedFilter = '{insertFilter}', insertedMag = {insertMag} where transientBucketId = {transientBucketId};
         """
         print(sqlQuery)
         rows = writequery(

@@ -253,6 +253,8 @@ def main(arguments=None):
         schr.removeOlderOBs()
         schr.removeFainterOBs()
         schr.request_all_required_auto_obs()
+        # Upddating the magnitudes
+        schr.request_autoOb_updates()
         # Updating status for each OB
         print("================================================")
         print("Updating status for each OB")
